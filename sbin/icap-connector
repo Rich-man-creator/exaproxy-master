@@ -1,0 +1,207 @@
+#!/usr/bin/env python
+
+import os
+import sys
+import socket
+
+
+def log(prefix, string):
+	location = os.environ.get('LOG',None)
+	if prefix:
+		with open(location + ('-%s' % str(os.getpid())), 'a+') as fd:
+			fd.write('%-6s %s\n' % (prefix,string.replace('\r','\\r').replace('\n','\\n')))
+
+
+class NET (object):
+	def __init__ (self,host,port):
+		self.host = host
+		self.port = port
+		self.socket = None
+		self.buffered = ''
+
+	def connect (self):
+		try:
+			self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			self.socket.connect((self.host,self.port))
+			return True
+		except KeyboardInterrupt:
+			sys.exit(0)
+		except (socket.gaierror,socket.herror):
+			return False
+
+	def read (self,size=1,end=None):
+		buf_data = self.buffered
+
+		if end is not None:
+			if end in buf_data:
+				returned,buf_data = buf_data.split(end,1)
+				self.buffered = buf_data
+				return returned + end
+			else:
+				while end not in buf_data:
+					extra = self.socket.recv(4016)
+					buf_data += extra
+					if not extra:
+						log('NO-DATA','')
+						sys.exit(1)
+				self.buffered = buf_data
+				return self.read(end=end)
+
+		buf_size = len(buf_data)
+
+		if size <= buf_size:
+			buf_size -= size
+			returned, buf_data = buf_data[:size],buf_data[size:]
+			self.buffered = buf_data
+			return returned
+
+		read_size = size - len(buf_data)
+		while read_size > 0:
+			extra = self.socket.recv(read_size)
+			read_size -= len(extra)
+			buf_data += extra
+		self.buffered = ''
+		return buf_data
+
+	def read_size (self):
+		total = 0
+		string = ''
+		while True:
+			byte = self.read(1)
+			string += byte
+			# this allows '\r\n' to be zero which is wrong but simple
+			if byte == '\r':
+				continue
+			if byte == '\n':
+				return total, string
+			total = total * 16
+			total = total + int(byte,16)
+
+	def sendall (self,buffer,reconnect=True):
+		if reconnect:
+			try:
+				return self.socket.sendall(buffer)
+			except (IOError, socket.error, socket.timeout, ):
+				if self.connect():
+					return self.socket.sendall(buffer)
+				raise
+
+	def recv (self,number):
+		return self.socket.recv(number)
+
+	def close (self):
+		if self.socket:
+			try:
+				self.socket.close()
+			except Exception:
+				pass
+			finally:
+				self.sock = None
+
+	def __del__ (self):
+		self.close()
+
+
+def main (host, port):
+	sock = None
+	while True:
+		try:
+			data = ''
+
+			net = NET(host,port)
+			if not net.connect():
+				sys.exit(1)
+
+			# ExaProxy has/had a bug where it will first look for \r\n
+			# and then \n\n for the end of headers.
+			# replacing the ICAP lines to end with \r\ is harmless
+			# and is a good work around the issue
+
+			while True:
+				# firewalls can kill long inactive connections,
+				# make sure to reconnect if it happens when reading the REQMOD line
+				line = sys.stdin.readline()
+				log('STDIN-FIRST',line)
+				log('SEND--FIRST',line.strip() + '\r\n')
+				net.sendall(line.strip() + '\r\n',reconnect=True)
+
+				looping = 2
+				while looping:
+					line = sys.stdin.readline()
+					log('STDIN-LOOPS',line)
+					if looping == 2:
+						if line.startswith('Pragma:'):
+							continue
+						log('SEND--LOOP2',line.strip() + '\r\n')
+						net.sendall(line.strip() + '\r\n')
+					else:
+						log('SEND--LOOP1',line)
+						net.sendall(line)
+					if not line.strip():
+						looping -= 1
+
+				log('SENT-ICAP','----')
+
+				while True:
+					recv = net.read(end='\n')
+					log('RECV---ICAP',recv)
+					data += recv
+					if '\r\n\r\n' in data:
+						break
+
+				response,data = data.split('\r\n\r\n',1)
+
+				log('STDOUT-ICAP',response + '\r\n\r\n')
+				sys.stdout.write(response + '\r\n\r\n')
+				sys.stdout.flush()
+
+				# ExaProxy always put the encapsulation last, this is not a RFC behaviour
+				encapsulation = response.split('\r\n')[-1]
+
+				# Encapsulated: req-hdr=0, null-body=135
+				# Encapsulated: res-hdr=0, res-body=226
+				headers = dict((k.strip(),int(v)) for k,v in (_.split('=') for _ in encapsulation.split(':')[-1].split(',')))
+				# this is wrong in theory .. in practice it works
+
+				if 'req-hdr' in headers:
+					response = net.read(headers['null-body'])
+				# chunk encoded
+				elif 'res-hdr' in headers:
+					response = net.read(headers['res-body'])
+
+					chunk_size = -1
+					while True:
+						chunk_size, chunk_data = net.read_size()
+						log('RECV--SIZE',chunk_data)
+						response += chunk_data
+						chunk = net.read(chunk_size)
+						log('RECV-CHUNK',chunk)
+						response += chunk
+						if chunk_size == 0:
+							break
+						eol = net.read(2)
+						log('RECV---EOL',eol)
+						response += eol
+				else:
+					log('FATAL', 'unknown encapsulation [%s]' % encapsulation)
+
+				log('STDOUT-HTTP',response)
+				sys.stdout.write(response)
+				sys.stdout.flush()
+
+		except KeyboardInterrupt:
+			log('KEYBOARD','INTERRUPT')
+			sys.exit(0)
+
+		except Exception, e:
+			net.close()
+			log('CRASH','exaproxy surfprotect connector failed\n')
+			log('CRASH',str(e))
+			sys.exit(1)
+
+
+if __name__ == '__main__':
+	main(
+		sys.argv[1],
+		1344 if len(sys.argv) < 3 else int(sys.argv[2])
+	)

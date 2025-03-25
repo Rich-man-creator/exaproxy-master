@@ -1,0 +1,48 @@
+BUG Fixes:
+ - fix all XXX:
+
+Reliablity:
+ - look at tox: http://tox.testrun.org/latest/
+ - implement the timeout of client sockets.
+ - warning when we are reaching 90% connection limit
+ - do not rely on remote Google JS code should the proxy not have no net access ( !!! .... )
+
+RFC Compliance
+ - consider adding a VIA header to the answer from the server (not done to save CPU)
+ - need to serve a HTTP/1.0 via the built-in webserver if the request is 1.0
+ - need to remove connection: header if HTTP is 1/0
+ - support 100-continue ? (Section 8.2.3)
+ - do not forward 100 response due to Expect:100 if client is HTTP/1.0 (Section 8.2.3)
+ - pass the REQUEST HTTP version all the way to the HTTP page generated in response
+ - 414 Request-URI Too Long instead of aborting the request
+
+Protection
+ - incomming IP ACL (for allowed users) - for the moment the firewall of the machine will do ..
+
+Performance
+ - use ctypes and the linux splice system call for better performance
+ - remove a double dict lookup in the main loop
+ - look at python Buffer and Array API
+ - look at python 2.7 performance for list.join vs string appending
+ - investigate regex for header parsing performance
+ - investigate why pypy takes more CPU than cPython in some cases
+ - split the worker forking to another process as the process can use several GB of memory when it happens
+
+Cleanup
+ - refactor the communication over pipe to have the serialisation/deserialisation in one place
+ - use some structure when passing message for readability
+ - configuration should not be stored in object as it prevents reload (unless required)
+
+Feature
+ - offer an option for happy Eyeballs (RFC 6555) when it comes to IPv6 (http://tools.ietf.org/html/rfc6555)
+ - fetch the SSL X.509 certificate from IPs to extract its hostname and pass it to the thread when using CONNECT
+ - more monitoring (self-updating page with realtime rotating logs)
+ - a redirector which connects to our ICAP service
+ - option to prever IPv6 DNS answers over IPv4 or vice-versa
+ - record data transfered ?
+ - show number of connections per ip on the webpage
+ - ability for the process to request a recording of the steam
+
+ Fun
+  - make a redirector which blocks all old version of IE
+
